@@ -18,6 +18,8 @@ import json
 import urllib.request
 import datetime
 import argparse
+import traceback
+import sys
 
 #U+263C ☼   e2 98 bc    WHITE SUN WITH RAYS
 #U+2600  ☀   e2 98 80    BLACK SUN WITH RAYS
@@ -195,16 +197,37 @@ def generateCmdlineDailyReport(data):
     icon = chr(icon_codes[icon])
     
     print("{0}: min/max {1: > 5.1f}°C {2: = 5.1f}°C {3} {4}".format(day, min_temp, max_temp, icon, weather))
+    
+def owmQuery(*args, **kwargs):
+    request_url = "/".join(map(urllib.parse.quote_plus, map(str, args)))
+    params = urllib.parse.urlencode(kwargs)
+    data_url = "http://api.openweathermap.org/data/2.1/{0}?{1}".format(request_url, params)
+    response = urllib.request.urlopen(data_url)
+    data = {}
+    try:
+        raw_json = response.readall()
+        data = json.loads(raw_json.decode("utf-8"))
+    except ValueError as e:
+        if raw_json:
+            traceback.print_exc()
+            print(raw_json)
+        else:
+            print("Server did not return data. Maybe simply nothing was found, maybe the server was lazy. Try again and find out.")
+        sys.exit(-1)
+    return data
 
 def loadData(city, compact=True):
-    data_url = "http://api.openweathermap.org/data/2.1/forecast/city?q={0}&mode={1}".format(
-        city, "daily_compact" if compact else ""
-    )
-    response = urllib.request.urlopen(data_url)
-    data = json.loads(response.readall().decode("utf-8"))
+    if isinstance(city, int):
+        data = owmQuery("forecast", "city", city, mode = ("daily_compact" if compact else ""))
+    else:
+        data = owmQuery("forecast", "city", q = city, mode = ("daily_compact" if compact else ""))
     for day in data["list"]:
         day["dt"] = datetime.datetime.fromtimestamp(day["dt"])
-        day["temperatures"] = list(map(lambda x: x-273.15, [day["morn"], day["temp"], day["eve"], day["night"]]))
+        day["temperatures"] = list(
+            map(lambda x: x-273.15,
+                [day["morn"], day["temp"], day["eve"], day["night"]]
+            )
+        )
     return data
 
 if __name__ == "__main__":
@@ -213,17 +236,22 @@ if __name__ == "__main__":
     parser.add_argument("-i, --cityid", type=int, metavar="CITY", dest="city", help="OWM Id of the city to display forecast from")
     parser.add_argument("-a, --awesome", action="store_const", const="awesome", dest="mode", help="Write files in /tmp for consumation by awesome widgets")
     parser.add_argument("-d, --num-days", type=int, default=3, metavar="CITY", dest="num_days", help="Number of days in forecast, set to 0 for maximum available")
+    parser.add_argument("-q, --q", type=str, default=None, metavar="CITY", dest="query", help="Query city names and display informations about matches. Does not display weather data.")
     args = vars(parser.parse_args())
-    data = loadData(args["city"])
-    if args["mode"] is None:
-        print("{city[name]}, {city[country]}; lat {city[coord][lat]}, lon {city[coord][lon]}, population {city[population]}, OWM ID {city[id]}".format(**data))
-    for i, day in enumerate(data["list"]):
-        if args["num_days"] != 0 and i >= args["num_days"]:
-            break
-        
-        if args["mode"] == "awesome":
-            generateAwesomeReports(day, i)
-        else:
-            generateCmdlineDailyReport(day)
     
-    
+    if "query" in args and args["query"]:
+        data = owmQuery("find", "name", q = args["query"], type = "like")
+        for city in data["list"]:
+            print("{name},{sys[country]}; OWM-ID {id}, population {sys[population]}, lon".format(**city))
+    else:
+        data = loadData(args["city"])
+        if args["mode"] is None:
+            print("{city[name]}, {city[country]}; lat {city[coord][lat]}, lon {city[coord][lon]}, population {city[population]}, OWM ID {city[id]}".format(**data))
+        for i, day in enumerate(data["list"]):
+            if args["num_days"] != 0 and i >= args["num_days"]:
+                break
+            
+            if args["mode"] == "awesome":
+                generateAwesomeReports(day, i)
+            else:
+                generateCmdlineDailyReport(day)
